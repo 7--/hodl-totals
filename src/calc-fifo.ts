@@ -1,5 +1,8 @@
 import { CompleteDataRow } from './types';
 
+// Update lot type to include wallet
+type Lot = [Date, number, number, number, string]; // date, amount, cost, row, wallet
+
 /**
  * Using the FIFO method calculate short and long term gains from the data.
  *
@@ -44,6 +47,28 @@ export function calculateFIFO(
         }
     }
 
+    // Group lots by wallet
+    const walletLots = new Map<string, Lot[]>();
+    
+    // Convert lots to include wallet info
+    lots.forEach((lot, index) => {
+        const wallet = data[lot[3]][1] as string; // Get wallet from column B
+        const lotWithWallet: Lot = [...lot, wallet];
+        
+        if (!walletLots.has(wallet)) {
+            walletLots.set(wallet, []);
+        }
+        walletLots.get(wallet)?.push(lotWithWallet);
+    });
+
+    // Helper function to format lot strings with wallet
+    function soldLotsStringWithWallet(wallet: string, lotNum: number, percent?: number): string {
+        if (percent !== undefined) {
+            return `Lot ${lotNum} ${wallet} - ${percent.toFixed(0)}% Sold`;
+        }
+        return `Sold from Lot ${lotNum} ${wallet}`;
+    }
+
     for (const sale of sales) {
         let termSplit: boolean;
         let prevSplitRow: boolean;
@@ -63,17 +88,20 @@ export function calculateFIFO(
         sellRow = sale[3];
         stLotCnt = lotCnt;
 
-        for (let lot = lotCnt; lot < lots.length; lot++) {
+        const wallet = data[sale[3]][1] as string;
+        const lotsForWallet = walletLots.get(wallet) || [];
+
+        for (let lot = lotCnt; lot < lotsForWallet.length; lot++) {
             let nextTerm: Date;
             let originalDate: Date;
             let originalCoin: number;
             let originalCost: number;
-            const lotCoin = lots[lot][1];
-            const lotCost = lots[lot][2];
-            const lotRow = lots[lot][3];
+            const lotCoin = lotsForWallet[lot][1];
+            const lotCost = lotsForWallet[lot][2];
+            const lotRow = lotsForWallet[lot][3];
 
             // mark 1 year from the lotDate, to use in gains calculations later
-            const thisTerm = datePlusNYears(lots[lot][0], 1);
+            const thisTerm = datePlusNYears(lotsForWallet[lot][0], 1);
 
             // if the remaining coin to sell is less than what is in the lot,
             // calculate and post the cost basis and the gain or loss
@@ -83,16 +111,16 @@ export function calculateFIFO(
                     data[lotRow][15] = `Lot ${lot + 1} - 100% Sold`;
 
                     // if there are more lots to process, advance the lot count before breaking out
-                    if ((lotCnt + 1) < lots.length) {
+                    if ((lotCnt + 1) < lotsForWallet.length) {
                         lotCnt += 1;
-                        lotCoinRemain = lots[lotCnt][1];
+                        lotCoinRemain = lotsForWallet[lotCnt][1];
                     }
                 } else {
                     // only some of the lot remains
                     lotCoinRemain -= sellCoinRemain;
                     const percentSold = 1 - (lotCoinRemain / lotCoin);
 
-                    data[lotRow][15] = `Lot ${lot + 1} - ${(percentSold * 100).toFixed(0)}% Sold`;
+                    data[lotRow][15] = soldLotsStringWithWallet(wallet, lot + 1, percentSold);
                 }
 
                 // if sale more than 1 year and 1 day from purchase date mark as long-term gains
@@ -113,8 +141,8 @@ export function calculateFIFO(
 
                     data[sellRow + shift][8] = 0;
                     data[sellRow + shift][9] = 0;
-                    data[sellRow + shift][15] = soldLotsString(stLotCnt, lot);
-                    data[sellRow + shift][16] = soldLotDatesString(lots[lot][0]);
+                    data[sellRow + shift][15] = soldLotsStringWithWallet(wallet, lot + 1);
+                    data[sellRow + shift][16] = soldLotDatesString(lotsForWallet[lot][0]);
                     data[sellRow + shift][18] = costBasis;
                     data[sellRow + shift][19] = gainLoss;
                 }
@@ -125,8 +153,8 @@ export function calculateFIFO(
                 // determine if there is a term split, and calculate running totals
 
                 // mark 1 year from the look-ahead lotDate
-                if ((lot + 1) < lots.length) {
-                    nextTerm = datePlusNYears(lots[lot + 1][0], 1);
+                if ((lot + 1) < lotsForWallet.length) {
+                    nextTerm = datePlusNYears(lotsForWallet[lot + 1][0], 1);
                 } else {
                     nextTerm = sellDate; // no look-ahead date, so no term-split, fall thru the next case
                 }
@@ -153,8 +181,8 @@ export function calculateFIFO(
                     data[sellRow + shift][6] = -originalCoin * splitFactor;
                     data[sellRow + shift][10] = originalCoin * splitFactor;
                     data[sellRow + shift][11] = originalCost * splitFactor;
-                    data[sellRow + shift][15] = soldLotsString(stLotCnt, lot);
-                    data[sellRow + shift][16] = soldLotDatesString(lots[lot][0]);
+                    data[sellRow + shift][15] = soldLotsStringWithWallet(wallet, lot + 1);
+                    data[sellRow + shift][16] = soldLotDatesString(lotsForWallet[lot][0]);
                     data[sellRow + shift][17] = 'Long-term';
                     data[sellRow + shift][18] = costBasis;
                     data[sellRow + shift][19] = gainLoss;
@@ -181,7 +209,7 @@ export function calculateFIFO(
                         data[sellRow + shift][17] = 'Short-term';
 
                         // update lots after the split transaction to account for the inserted row
-                        for (const lotAfterSplit of lots) {
+                        for (const lotAfterSplit of lotsForWallet) {
                             if (lotAfterSplit[3] >= (sellRow + shift)) {
                                 lotAfterSplit[3] += 1;
                             }
@@ -207,8 +235,8 @@ export function calculateFIFO(
                 sellCoinRemain -= lotCoinRemain;
                 data[lotRow][15] = `Lot ${lot + 1} - 100% Sold`;
                 lotCnt += 1;
-                if (lotCnt < lots.length) {
-                    lotCoinRemain = lots[lotCnt][1];
+                if (lotCnt < lotsForWallet.length) {
+                    lotCoinRemain = lotsForWallet[lotCnt][1];
                 }
             }
         }
